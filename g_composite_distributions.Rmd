@@ -1,0 +1,288 @@
+---
+title: "Gaussian Interpolation Demos"
+author: "Ryan McCorvie"
+date: '2022-12-13'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library( tidyverse )
+library( knitr)
+source( "g_composite_distributions.R")
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This document includes a short tutorial of how to create and manipulate two types of composite Gaussian distributions.  
+
+
+### What are we talking about?
+
+There are two types of distributions described in this demo.  
+
+The first type of distribution is a mixture.  To generate a sample of a mixture, choose one of the mixture components at random, then sample that distribution.  This library handles Gaussian mixtures.  
+
+The second type of distribution is defined by interpolating quantiles.  Let $f$ be a generalized average, where for a vector input $x$, we have $\min(x)\leq f(x)$ and  $f(x) \leq \max(x)$.  Furthermore let $f$ be monotonic in every input.  If $Q_i$ are the quantile functions for some set of distributions, then we can define a new quantile function $Q: p \mapsto f( Q_1(p), \dots, Q_n(p))$.  This is monotonic since $f$ and $Q_i$ are monotonic, and its range is in $[0,1]$ becuase $f$ is bound by the $Q_i$ whose range is $[0,1]$.  
+
+This library handles distributions whose quantiles are means of Gaussian quantiles. In other words, $f$ is a weighted mean and all of the $Q_i$ are Gaussian quantiles.
+
+Graphically, the mixture corresponds to averaging distribution functions vertically  The $q$-interpolation corresponds to averaging distributions horizontally.  
+
+
+### Why is this useful?
+
+Both of these techniques let us interpolate a group of distribution and get a new distribution which is a reasonable "average" distribution.  This in turn can let us aggregate confidence intervals, if we associate each confidence interval to a reasonable distribution.  Another application is ensembling.  Suppose you have a set of forecasts, each of which provides quantile estimates at each forecast date.  Then you can use either of these techniques to create an ensemble forecast, interpolating the distribution functions at each forecast date.
+
+
+```{r function def, include=FALSE}
+
+
+plot_gcomposite <- function( gcomp )
+{
+  a <- min( gcomp$mean - 3*gcomp$sd )
+  b <- max( gcomp$mean + 3*gcomp$sd )
+  xx <- seq(a,b,length.out=100)
+
+  tt.mix <- tibble( xx = xx ) %>% 
+    mutate(
+      cdf = pmixture( xx, gcomp ),
+      pdf = dmixture( xx, gcomp ),
+      distribution = "mixture"
+    )
+
+  pp <- seq(0,1,length.out=102) %>% head(-1) %>% tail(-1)
+
+  tt.interp <- tibble( cdf  = pp ) %>% 
+    mutate( 
+      xx  = qinterp( cdf, gcomp ),
+      pdf = dinterp( xx, gcomp ),
+      distribution = "interp"
+    )
+  tt <- bind_rows( tt.mix, tt.interp)
+  
+  for( idx in seq_along( gcomp$mean ))
+  {
+    tt <- tt %>%
+      bind_rows( tibble(
+        xx = xx, 
+        cdf = pnorm( xx, gcomp$mean[idx], gcomp$sd[idx] ), 
+        pdf = dnorm( xx, gcomp$mean[idx], gcomp$sd[idx] ),
+        distribution = paste0( "g", idx )
+      ))
+  }
+
+  p1 <- ggplot( filter( tt, str_detect( distribution, "^g" )), aes( x=xx, y=pdf, col = distribution )) + 
+    geom_line( lty="dotted" ) + 
+    geom_line( data = filter( tt, !str_detect( distribution, "^g" ))) +
+    ggtitle( "Gaussians & Composites PDF")
+  
+  print( p1 )
+  
+  p2 <- ggplot( filter( tt, str_detect( distribution, "^g" )), aes( x=xx, y=cdf, col = distribution )) + 
+    geom_line( lty="dotted" ) + 
+    geom_line( data = filter( tt, !str_detect( distribution, "^g" ))) +
+    ggtitle( "Gaussians & Composites CDF")
+
+  print( p2 )
+}
+
+
+plot_random <- function( n, gcomp )
+{
+  gcomp=gcomp1
+  n=100
+  a <- min( gcomp$mean - 3*gcomp$sd )
+  b <- max( gcomp$mean + 3*gcomp$sd )
+  xx <- seq(a,b,length.out=100)
+
+  tt.mix <- tibble( xx = xx ) %>% 
+    mutate(
+      cdf = pmixture( xx, gcomp ),
+      pdf = dmixture( xx, gcomp ),
+      distribution = "mixture"
+    )
+
+  pp <- seq(0,1,length.out=102) %>% head(-1) %>% tail(-1)
+
+  tt.interp <- tibble( cdf  = pp ) %>% 
+    mutate( 
+      xx  = qinterp( cdf, gcomp ),
+      pdf = dinterp( xx, gcomp ),
+      distribution = "interp"
+    )
+
+  tt <- bind_rows( tt.mix, tt.interp)
+  rando <- bind_rows(
+    tibble( xx = rmixture( n, gcomp ), distribution = "mixture" ),
+    tibble( xx = rinterp( n, gcomp ), distribution = "interp" ),
+  )
+  
+  p1 <- ggplot( tt, aes( x=xx, col = distribution )) + 
+    geom_line( aes(  y=pdf )) + 
+    geom_density( data=rando, aes( x=xx), lty= "dotted")+
+    ggtitle( "Gaussians & Composites PDF", sub = paste0("dotted line is empirical density from ", n, " random samples"))
+  print( p1 )
+}
+
+  
+```
+
+### Examples
+
+First consider a mixture of $N(1,0.5)$ and $N(3,1)$.
+
+```{r example1}
+gcomp1 = list( 
+  mean = c(1,3),
+  sd   = c(0.5,1 )
+)
+plot_gcomposite( gcomp1 )
+```
+
+Compare these values to the plot
+
+25-percentile = `r format( qmixture( 0.25, gcomp1 ), 3 )`
+75-percentile = `r format( qmixture( 0.75, gcomp1 ), 3 )`
+
+Note that we specify both mixtures and q-interpolations with the same type of list: a component for the means, a component for the standard deviations and an optional component for the weights.
+
+The mixture and q-interpolation of equal Gaussians is the same as the input Gaussians.  In particular, unlike with averaging, there is no narrowing with more components.
+
+```{r example2}
+
+gcomp2 = list( 
+  mean = c(0,0,0),
+  sd   = c( 1,1,1 )
+)
+
+plot_gcomposite( gcomp2 )
+
+```
+
+
+The mixture or q-interpolation of Gaussians with the same center and different widths is a Gaussian-like distribution with the same center and an interpolated width close to the average of the component distributions.
+
+```{r example3}
+
+gcomp3 = list( 
+  mean = c(0,0,0),
+  sd   = c( 0.5,1,1.5 )
+)
+
+plot_gcomposite( gcomp3 )
+
+```
+
+The mixture of Gaussians with different centers and the same widths is a distribution stretched out to give some weight to each of the component Gaussians' domains.  The q-interpolation of Gaussians with the same widths is a Gaussian with the same standard deviation, and the center is the average of the centers.
+
+```{r example4}
+gcomp4 = list( 
+  mean = c(-1.5,0,1.5),
+  sd   = c( 1,1,1 )
+)
+
+plot_gcomposite( gcomp4 )
+
+```
+
+
+
+We can generate random samples.
+
+
+```{r example5}
+
+
+plot_random( 100, gcomp1 )
+
+```
+
+
+### How to interpolate confidence intervals
+
+
+Combine confidence intervals with Gaussian mixture method
+
+```{r make table, echo=FALSE, results='asis'}
+
+rtlive.conf  <- c( 0.1, 0.9)
+rtlive.value <- c( 0.89, 1.24)
+
+can.conf  <- c( 0.1, 0.9)
+can.value <- c( 0.92, 1.14 )
+
+icl.conf  <- c(0.025, 0.975 ) 
+icl.value <- c( 0.78, 1.32 )
+
+CIs <- bind_rows(
+  tibble( x = rtlive.value, `%-tile` = rtlive.conf, source = "Rt.live"),
+  tibble( x = can.value, `%-tile` = can.conf, source = "CovidActNow"),
+  tibble( x = icl.value, `%-tile` = icl.conf, source = "ICL")
+)
+
+kable( CIs, align = "ccl", caption = "Some R-effective confidence intervals")
+
+```
+
+Now we'll fit a Gaussian to each confidence interval, and use those parameters to define a Gaussian mixture.
+
+```{r fit gmixture}
+
+fit.data <- list( 
+  list( x=rtlive.value, q=rtlive.conf),
+  list( x=can.value,    q=can.conf),
+  list( x=icl.value,    q=icl.conf)
+)
+
+gaussians <- map( fit.data, ~ CI_to_Gaussian( .$x, .$q ))
+gcomposite <- list( mean = map_dbl( gaussians, ~.$mean ), sd = map_dbl( gaussians, ~.$sd ))
+
+```
+
+ Let's ensure what we get out is the same as what we put in. Compare the means of the Gaussian composite distribution and the confidence intervals. 
+
+```{r compare means, echo=FALSE, results='asis'}
+
+tt <- tibble( 
+  `Gaussian Composite` = gcomposite$mean, 
+  `Intervals`= c(mean(rtlive.value), mean(can.value),mean(icl.value)), 
+  source = c( "Rt.live", "CovidActNow", "ICL")
+)
+
+kable( tt, align = "ccl", caption = "CI centers vs Gaussian means")
+
+```
+
+
+Let's check that the components have the right quartiles corresponding to the input data.
+
+```{r reproduce input}
+tt<- CIs %>% 
+  bind_cols( mean = rep( gcomposite$mean,each=2), sd =  rep( gcomposite$sd,each=2)) %>% 
+  mutate( 
+    `Gaussian x` = qnorm(`%-tile`, mean, sd),
+    `Gaussian %-tile` = pnorm( x, mean, sd )
+  )
+
+
+kable( tt, align = "ccl", caption = "CI's vs Gaussians")
+
+
+```
+
+Let's plot the composite distributions against the source distributions. In this example, where the two composite distributions roughly line up, there's not a big difference between the two methodologies.
+
+
+```{r plot new mixture}
+plot_gcomposite( gcomposite )
+```
+
+To interpolate the inputs, take quantiles of the g-composite distributions  In other words, the confidence interval for the g-composite, is an interpolation of the source confidence intervals.  In this example, the two methodologies roughly result in the same composite CI's, there's not a big difference.
+
+
+```{r quantiles of mixture}
+qmixture( c( 0.25, 0.75 ), gcomposite )
+qinterp( c( 0.25, 0.75 ), gcomposite )
+
+```
+
+
